@@ -10,38 +10,70 @@ from reportlab.lib import colors
 from google import genai
 from google.genai import types
 
-# 1. Setup - UPDATED NAME
+# 1. Setup
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 st.set_page_config(page_title="ASW Stock Ideas", layout="wide")
 
 # 2. CORE LOGIC FUNCTIONS
+
+# NEW FUNCTION: AI Ticker Resolver
+def resolve_ticker_with_ai(stock_name):
+    client = genai.Client(api_key=st.secrets["API_KEY"])
+    search_tool = types.Tool(google_search=types.GoogleSearch())
+    
+    prompt = f"""
+    Find the exact Yahoo Finance ticker symbol for the company or search term: '{stock_name}'.
+    Rules:
+    1. If it's an Indian stock listed on the NSE, return the symbol with '.NS' (e.g., 'TATAMOTORS.NS', 'ZOMATO.NS').
+    2. If it's an Indian stock listed ONLY on the BSE (like Taparia Tools), find its 6-digit numeric BSE code and return it with '.BO' (e.g., '505685.BO').
+    3. If it's a US stock, return the raw ticker (e.g., 'AAPL', 'MSFT').
+    OUTPUT ONLY THE TICKER SYMBOL. Do not include any extra words, symbols, or explanations.
+    """
+    
+    response = client.models.generate_content(
+        model='gemini-3.1-flash-lite', 
+        contents=prompt, 
+        config=types.GenerateContentConfig(
+            temperature=0.1,
+            tools=[search_tool]
+        )
+    )
+    return response.text.strip().replace(" ", "").upper()
+
 def fetch_stock_data(ticker_symbol):
     ticker_upper = ticker_symbol.upper().strip()
     info = None
-    if not ticker_upper.endswith(('.NS', '.BO')):
-        try:
-            stock = yf.Ticker(ticker_upper + '.NS')
-            info = stock.info
-            if 'currentPrice' not in info: raise ValueError
-        except Exception:
-            try:
-                stock = yf.Ticker(ticker_upper + '.BO')
-                info = stock.info
-                if 'currentPrice' not in info: raise ValueError("Ticker not found.")
-            except Exception: raise ValueError("Ticker not found on NSE or BSE.")
-    else:
+    
+    # Try the exact AI-provided ticker first
+    try:
         stock = yf.Ticker(ticker_upper)
         info = stock.info
-        if 'currentPrice' not in info: raise ValueError("Ticker not found.")
+        if 'currentPrice' not in info: raise ValueError
+    except Exception:
+        # Fallback just in case the AI missed the suffix
+        if not ticker_upper.endswith(('.NS', '.BO')):
+            try:
+                stock = yf.Ticker(ticker_upper + '.NS')
+                info = stock.info
+                if 'currentPrice' not in info: raise ValueError
+            except Exception:
+                try:
+                    stock = yf.Ticker(ticker_upper + '.BO')
+                    info = stock.info
+                    if 'currentPrice' not in info: raise ValueError("Stock not found.")
+                except Exception: raise ValueError("Stock not found on NSE or BSE.")
+        else:
+            raise ValueError("Stock not found.")
             
     metrics = {
-        "name": info.get("longName", ticker_symbol),
+        "name": info.get("longName", ticker_upper),
         "price": info.get("currentPrice", "N/A"),
         "pe_ratio": info.get("trailingPE", "N/A"),
         "debt_to_equity": info.get("debtToEquity", "N/A"),
         "net_margin": info.get("profitMargins", "N/A"),
         "market_cap": info.get("marketCap", "N/A")
     }
+    
     if metrics["debt_to_equity"] != "N/A": metrics["debt_to_equity"] = round(metrics["debt_to_equity"] / 100, 2)
     if metrics["net_margin"] != "N/A": metrics["net_margin"] = f"{round(metrics['net_margin'] * 100, 2)}%"
     
@@ -65,7 +97,7 @@ def fetch_stock_data(ticker_symbol):
         
     return metrics
 
-def generate_report_content(ticker, metrics):
+def generate_report_content(stock_name, metrics):
     client = genai.Client(api_key=st.secrets["API_KEY"])
     
     system_instruction = """
@@ -99,7 +131,7 @@ def generate_report_content(ticker, metrics):
     user_prompt = f"""
     Analyze this stock:
     Company Name: {metrics['name']}
-    Ticker: {ticker}
+    Stock Name/Ticker: {stock_name}
     Current Price: INR {metrics['price']}
     TTM P/E Ratio: {metrics['pe_ratio']}
     Debt-to-Equity Ratio: {metrics['debt_to_equity']}
@@ -111,7 +143,6 @@ def generate_report_content(ticker, metrics):
     Debt Trend: {metrics['debt_trend']}
     """
     
-    # Tool for Real-Time Internet Access
     search_tool = types.Tool(google_search=types.GoogleSearch())
     
     response = client.models.generate_content(
@@ -125,7 +156,7 @@ def generate_report_content(ticker, metrics):
     )
     return response.text
 
-def build_pdf_report(pdf_buffer, ticker, metrics, ai_text):
+def build_pdf_report(pdf_buffer, stock_name, metrics, ai_text):
     doc = SimpleDocTemplate(pdf_buffer, pagesize=letter, rightMargin=45, leftMargin=45, topMargin=45, bottomMargin=45)
     styles = getSampleStyleSheet()
     
@@ -200,14 +231,20 @@ if 'report_data' not in st.session_state:
     st.session_state.report_data = None
 
 st.title("ASW Stock Ideas")
-ticker_input = st.text_input("Enter Ticker Symbol (e.g. BLUSPRING, TATAMOTORS):", "BLUSPRING")
+stock_input = st.text_input("Enter Stock Name (e.g., Tata Motors, Apple, Taparia Tools):", "Tata Motors")
 
 if st.button("Generate Report"):
-    with st.spinner('Analyzing Fundamentals and Live Macro Risks...'):
+    with st.spinner('AI is resolving the company name to a valid ticker...'):
         try:
-            metrics = fetch_stock_data(ticker_input)
-            ai_text = generate_report_content(ticker_input, metrics)
-            st.session_state.report_data = {"metrics": metrics, "ai_text": ai_text, "ticker": ticker_input}
+            # 1. Ask the AI to figure out what stock you mean
+            resolved_ticker = resolve_ticker_with_ai(stock_input)
+            st.success(f"Resolved '{stock_input}' to Yahoo Finance Ticker: **{resolved_ticker}**")
+            
+            # 2. Fetch the data using the perfectly resolved code
+            with st.spinner('Fetching Data & Analyzing Live Macro Risks...'):
+                metrics = fetch_stock_data(resolved_ticker)
+                ai_text = generate_report_content(resolved_ticker, metrics)
+                st.session_state.report_data = {"metrics": metrics, "ai_text": ai_text, "stock": stock_input, "ticker": resolved_ticker}
         except Exception as e:
             st.error(f"Error: {e}")
 
