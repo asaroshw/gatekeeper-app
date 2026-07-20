@@ -18,38 +18,53 @@ st.set_page_config(page_title="ASW Stock Ideas", layout="wide")
 # 2. CORE LOGIC FUNCTIONS
 
 def resolve_name_to_ticker(stock_input):
-    """Uses Yahoo's native search API to find the exact ticker from a plain name."""
+    """Uses Yahoo's native search API with advanced headers to find the exact ticker."""
     stock_str = str(stock_input).strip()
     
-    # If someone still manually enters a BSE number, catch it smoothly
+    # 1. Catch BSE numeric codes (e.g., 505685 for Taparia Tools)
     if stock_str.isdigit():
         return stock_str + '.BO'
         
+    # 2. Try Yahoo's Search API with a heavy-duty User-Agent to bypass bot filters
     try:
-        # Silently query Yahoo Finance's search bar
         url = f"https://query2.finance.yahoo.com/v1/finance/search?q={stock_str}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json'
+        }
         res = requests.get(url, headers=headers, timeout=5)
-        data = res.json()
-        if 'quotes' in data and len(data['quotes']) > 0:
-            return data['quotes'][0]['symbol']
+        if res.status_code == 200:
+            data = res.json()
+            if 'quotes' in data and len(data['quotes']) > 0:
+                return data['quotes'][0]['symbol']
     except Exception:
         pass
         
-    # Final fallback if search fails
-    upper_input = stock_str.upper()
+    # 3. Fallback: Strip spaces and guess it's an Indian stock (NSE)
+    upper_input = stock_str.upper().replace(" ", "")
     if not upper_input.endswith(('.NS', '.BO')):
          return upper_input + '.NS'
     return upper_input
 
-def fetch_stock_data(resolved_ticker):
+def fetch_stock_data(resolved_ticker, raw_input):
     info = None
+    stock = None
+    
+    # Try the resolved ticker first
     try:
         stock = yf.Ticker(resolved_ticker)
         info = stock.info
         if 'currentPrice' not in info: raise ValueError
     except Exception:
-        raise ValueError("Stock not found. Please try a different name.")
+        # SAFETY NET: If the search API got blocked and it guessed "APPLE.NS", try standard US ticker
+        try:
+            pure_ticker = raw_input.upper().replace(" ", "")
+            stock = yf.Ticker(pure_ticker)
+            info = stock.info
+            if 'currentPrice' not in info: raise ValueError
+            resolved_ticker = pure_ticker # Update it to the working US ticker
+        except Exception:
+            raise ValueError(f"Could not find financial data for '{raw_input}'. Try using the exact stock symbol.")
             
     metrics = {
         "name": info.get("longName", resolved_ticker),
@@ -58,10 +73,11 @@ def fetch_stock_data(resolved_ticker):
         "debt_to_equity": info.get("debtToEquity", "N/A"),
         "net_margin": info.get("profitMargins", "N/A"),
         "market_cap": info.get("marketCap", "N/A"),
-        "recent_news": ""
+        "recent_news": "",
+        "working_ticker": resolved_ticker
     }
     
-    # NEW: Pull latest Yahoo headlines so AI can assess live macro-risks without hitting API limits
+    # Pull latest Yahoo headlines so AI can assess live macro-risks
     try:
         news_items = stock.news
         if news_items:
@@ -98,7 +114,6 @@ def fetch_stock_data(resolved_ticker):
 def generate_report_content(stock_name, metrics, ticker):
     client = genai.Client(api_key=st.secrets["API_KEY"])
     
-    # We stripped the Google Search command out of the prompt so it never errors out
     system_instruction = """
     Act as an automated, professional-grade equity research assistant built in the style of an institutional advisory report. You are a ruthless analyst evaluating 360-degree risk.
     Do not use any markdown tags, asterisks, or hash symbols in your response. Output raw text separated by clean line breaks.
@@ -144,7 +159,6 @@ def generate_report_content(stock_name, metrics, ticker):
     {metrics['recent_news']}
     """
     
-    # Google Search Tool has been completely removed to bypass quota limits
     response = client.models.generate_content(
         model='gemini-3.1-flash-lite', 
         contents=user_prompt, 
@@ -239,11 +253,14 @@ if st.button("Generate Report"):
             resolved_ticker = resolve_name_to_ticker(stock_input)
             
             # Fetch the data and the recent news
-            metrics = fetch_stock_data(resolved_ticker)
+            metrics = fetch_stock_data(resolved_ticker, stock_input)
+            
+            # Grab the final working ticker (in case the safety net activated)
+            final_ticker = metrics.pop('working_ticker')
             
             # Generate the report
-            ai_text = generate_report_content(stock_input, metrics, resolved_ticker)
-            st.session_state.report_data = {"metrics": metrics, "ai_text": ai_text, "stock": stock_input, "ticker": resolved_ticker}
+            ai_text = generate_report_content(stock_input, metrics, final_ticker)
+            st.session_state.report_data = {"metrics": metrics, "ai_text": ai_text, "stock": stock_input, "ticker": final_ticker}
         except Exception as e:
             st.error(f"Error: {e}")
 
