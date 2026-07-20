@@ -3,7 +3,6 @@ import yfinance as yf
 import logging
 import re
 import io
-import time  # Imported for handling API burst rate limits
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -17,55 +16,33 @@ st.set_page_config(page_title="ASW Stock Ideas", layout="wide")
 
 # 2. CORE LOGIC FUNCTIONS
 
-# AI Ticker Resolver
-def resolve_ticker_with_ai(stock_name):
-    client = genai.Client(api_key=st.secrets["API_KEY"])
-    search_tool = types.Tool(google_search=types.GoogleSearch())
-    
-    prompt = f"""
-    Find the exact Yahoo Finance ticker symbol for the company or search term: '{stock_name}'.
-    Rules:
-    1. If it's an Indian stock listed on the NSE, return the symbol with '.NS' (e.g., 'TATAMOTORS.NS', 'ZOMATO.NS').
-    2. If it's an Indian stock listed ONLY on the BSE (like Taparia Tools), find its 6-digit numeric BSE code and return it with '.BO' (e.g., '505685.BO').
-    3. If it's a US stock, return the raw ticker (e.g., 'AAPL', 'MSFT').
-    OUTPUT ONLY THE TICKER SYMBOL. Do not include any extra words, symbols, or explanations.
-    """
-    
-    response = client.models.generate_content(
-        model='gemini-3.1-flash-lite', 
-        contents=prompt, 
-        config=types.GenerateContentConfig(
-            temperature=0.1,
-            tools=[search_tool]
-        )
-    )
-    return response.text.strip().replace(" ", "").upper()
-
-def fetch_stock_data(ticker_symbol):
-    ticker_upper = ticker_symbol.upper().strip()
+def fetch_stock_data(stock_input):
+    stock_upper = stock_input.upper().strip()
     info = None
     
-    try:
-        stock = yf.Ticker(ticker_upper)
-        info = stock.info
-        if 'currentPrice' not in info: raise ValueError
-    except Exception:
-        if not ticker_upper.endswith(('.NS', '.BO')):
+    # Check if user entered a raw number (like Taparia's BSE code 505685)
+    # If they did, append .BO automatically so it works cleanly.
+    if stock_upper.isdigit():
+        stock_upper = stock_upper + '.BO'
+    
+    if not stock_upper.endswith(('.NS', '.BO')):
+        try:
+            stock = yf.Ticker(stock_upper + '.NS')
+            info = stock.info
+            if 'currentPrice' not in info: raise ValueError
+        except Exception:
             try:
-                stock = yf.Ticker(ticker_upper + '.NS')
+                stock = yf.Ticker(stock_upper + '.BO')
                 info = stock.info
-                if 'currentPrice' not in info: raise ValueError
-            except Exception:
-                try:
-                    stock = yf.Ticker(ticker_upper + '.BO')
-                    info = stock.info
-                    if 'currentPrice' not in info: raise ValueError("Stock not found.")
-                except Exception: raise ValueError("Stock not found on NSE or BSE.")
-        else:
-            raise ValueError("Stock not found.")
+                if 'currentPrice' not in info: raise ValueError("Stock not found.")
+            except Exception: raise ValueError("Stock not found on NSE or BSE.")
+    else:
+        stock = yf.Ticker(stock_upper)
+        info = stock.info
+        if 'currentPrice' not in info: raise ValueError("Stock not found.")
             
     metrics = {
-        "name": info.get("longName", ticker_upper),
+        "name": info.get("longName", stock_upper),
         "price": info.get("currentPrice", "N/A"),
         "pe_ratio": info.get("trailingPE", "N/A"),
         "debt_to_equity": info.get("debtToEquity", "N/A"),
@@ -230,25 +207,19 @@ if 'report_data' not in st.session_state:
     st.session_state.report_data = None
 
 st.title("ASW Stock Ideas")
-stock_input = st.text_input("Enter Stock Name:")
+
+# Helpful placeholder message so users know how to enter normal tickers vs BSE numeric tools like Taparia
+stock_input = st.text_input("Enter Stock Name / Ticker (e.g., TATAMOTORS, AAPL, or 505685 for Taparia):", "TATAMOTORS")
 
 if st.button("Generate Report"):
-    with st.spinner('AI is resolving the company name to a valid ticker...'):
+    # We stripped out the entire separate AI Ticker Resolver block to cut down requests
+    with st.spinner('Fetching Data & Analyzing Live Macro Risks...'):
         try:
-            # 1. Ask the AI to figure out what stock you mean
-            resolved_ticker = resolve_ticker_with_ai(stock_input)
-            st.success(f"Resolved '{stock_input}' to Yahoo Finance Ticker: **{resolved_ticker}**")
-            
-            # OPTION 1 FIX: Sleep for 3 seconds to avoid triggering the free-tier burst limit
-            time.sleep(3)
-            
-            # 2. Fetch the data using the perfectly resolved code
-            with st.spinner('Fetching Data & Analyzing Live Macro Risks...'):
-                metrics = fetch_stock_data(resolved_ticker)
-                ai_text = generate_report_content(resolved_ticker, metrics)
-                st.session_state.report_data = {"metrics": metrics, "ai_text": ai_text, "stock": stock_input, "ticker": resolved_ticker}
+            metrics = fetch_stock_data(stock_input)
+            ai_text = generate_report_content(stock_input, metrics)
+            st.session_state.report_data = {"metrics": metrics, "ai_text": ai_text, "stock": stock_input}
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Error: {e}. Please ensure the stock code is entered correctly (e.g., use numeric codes like 505685 for exclusive BSE stocks).")
 
 if st.session_state.report_data:
     data = st.session_state.report_data
@@ -267,12 +238,12 @@ if st.session_state.report_data:
     st.markdown("---")
     
     pdf_buffer = io.BytesIO()
-    build_pdf_report(pdf_buffer, data['ticker'], data['metrics'], data['ai_text'])
+    build_pdf_report(pdf_buffer, data['stock'], data['metrics'], data['ai_text'])
     pdf_buffer.seek(0)
     
     st.download_button(
         label="📥 Download Official PDF Report", 
         data=pdf_buffer, 
-        file_name=f"{data['ticker']}_ASW_Report.pdf", 
+        file_name=f"{data['stock']}_ASW_Report.pdf", 
         mime="application/pdf"
     )
