@@ -230,7 +230,7 @@ if 'report_data' not in st.session_state:
     st.session_state.report_data = None
 
 st.title("ASW Stock Ideas")
-stock_input = st.text_input("Enter Stock Name (e.g., Tata Motors, Apple, Taparia Tools):", "Tata Motors")
+stock_input = st.text_input("Enter Stock Name:")
 
 if st.button("Generate Report"):
     with st.spinner('AI is resolving the company name to a valid ticker...'):
