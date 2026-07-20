@@ -107,8 +107,8 @@ def build_pdf_report(pdf_buffer, ticker, metrics, ai_text):
 # 3. STREAMLIT INTERFACE
 if 'report_data' not in st.session_state: st.session_state.report_data = None
 
-st.title("The Gatekeeper Institutional App")
-ticker_input = st.text_input("Enter Ticker Symbol:", "BLUSPRING")
+st.title("The ASW Stock Ideas")
+ticker_input = st.text_input("Enter Stock Name:")
 
 if st.button("Generate Report"):
     with st.spinner('Running Gatekeeper Engine...'):
