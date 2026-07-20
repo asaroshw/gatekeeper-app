@@ -166,8 +166,8 @@ def build_pdf_report(pdf_buffer, ticker, metrics, ai_text):
     doc.build(story)
 
 # 3. STREAMLIT UI
-st.title("The Gatekeeper Institutional App")
-ticker_input = st.text_input("Enter Ticker Symbol (e.g. BLUSPRING, TATAMOTORS):", "BLUSPRING")
+st.title("ASW Stock Ideas")
+ticker_input = st.text_input("Enter Stock Name (e.g. BLUSPRING, TATAMOTORS):")
 
 if st.button("Generate & Download Report"):
     with st.spinner('Running Gatekeeper Engine...'):
