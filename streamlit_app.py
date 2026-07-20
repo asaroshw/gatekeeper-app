@@ -10,9 +10,9 @@ from reportlab.lib import colors
 from google import genai
 from google.genai import types
 
-# 1. Setup
+# 1. Setup - UPDATED NAME
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
-st.set_page_config(page_title="The Gatekeeper Institutional App", layout="wide")
+st.set_page_config(page_title="ASW Stock Ideas", layout="wide")
 
 # 2. CORE LOGIC FUNCTIONS
 def fetch_stock_data(ticker_symbol):
@@ -68,9 +68,8 @@ def fetch_stock_data(ticker_symbol):
 def generate_report_content(ticker, metrics):
     client = genai.Client(api_key=st.secrets["API_KEY"])
     
-    # Restored your EXACT prompt from Colab to prevent markdown corruption in PDF
     system_instruction = """
-    Act as an automated, professional-grade equity research assistant built in the style of an institutional advisory report. You are a ruthless gatekeeper and a trend momentum analyst.
+    Act as an automated, professional-grade equity research assistant built in the style of an institutional advisory report. You are a ruthless analyst evaluating 360-degree risk.
     Do not use any markdown tags, asterisks, or hash symbols in your response. Output raw text separated by clean line breaks.
     
     CRITICAL STRUCTURE INSTRUCTION:
@@ -86,11 +85,15 @@ def generate_report_content(ticker, metrics):
     KEY RISKS
     ACTIONABLE VERDICT
     
-    Under the ACTIONABLE VERDICT header, your very first words must be the DYNAMIC_RATING itself in all caps, followed by the detailed strategic rationale paragraph from the next line.
+    ANALYST RULES (LIVE MACRO & RISKS):
+    1. You MUST use your Google Search tool to look up the most recent news, geopolitical impacts, regulatory audits (like FDA), and tariff/supply chain issues affecting this specific company and its sector today.
+    2. Examples to check: For airlines/hospitality/tyres, assess crude oil price shocks and West Asian crises. For Pharma, assess FDA audits, plant inspections, and licensing. For exporters (IT/Manufacturing), assess tariffs and freight costs. For domestic players, assess import duty threats.
+    3. OVERRIDE RULE: If severe macro headwinds, thin margins, geopolitical supply chain risks, or regulatory threats exist in the current news, you MUST downgrade the rating (e.g., to HOLD, DON'T BUY, or SELL), even if historical financial momentum looks excellent.
     
-    ANALYST RULES:
-    1. THE DELTA RULE (Momentum): Heavily weight the "Historical Momentum Metrics". If a loss-making company is actively narrowing its losses over time, flag it as a turnaround and upgrade it. If a highly profitable company with a "good" P/E is actively shrinking its income or ballooning its debt year-over-year, downgrade it to a value trap (DON'T BUY or SELL).
-    2. LIQUIDITY TRAP: Strictly force a DON'T BUY rating for distorted liquidity traps (P/E under 1.0, absurd dividend yields, etc.).
+    VERDICT FORMATTING RULE:
+    Under the ACTIONABLE VERDICT header, you must output exactly two things:
+    Line 1: The DYNAMIC_RATING itself in all caps (e.g., HOLD).
+    Line 2: The detailed explanation of the verdict, explicitly weighing the financials against the live macro/regulatory risks found in the news.
     """
     
     user_prompt = f"""
@@ -108,10 +111,17 @@ def generate_report_content(ticker, metrics):
     Debt Trend: {metrics['debt_trend']}
     """
     
+    # Tool for Real-Time Internet Access
+    search_tool = types.Tool(google_search=types.GoogleSearch())
+    
     response = client.models.generate_content(
         model='gemini-3.1-flash-lite', 
         contents=user_prompt, 
-        config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.1)
+        config=types.GenerateContentConfig(
+            system_instruction=system_instruction, 
+            temperature=0.15,
+            tools=[search_tool]
+        )
     )
     return response.text
 
@@ -141,7 +151,7 @@ def build_pdf_report(pdf_buffer, ticker, metrics, ai_text):
         elif line_str: clean_lines.append(line_str)
                 
     story = [
-        Paragraph("Smart Gains", title_style),
+        Paragraph("ASW Stock Ideas", title_style), 
         Paragraph("Automated Equity Research Report — Institutional Series", subtitle_style),
         Spacer(1, 15)
     ]
@@ -150,7 +160,6 @@ def build_pdf_report(pdf_buffer, ticker, metrics, ai_text):
     target_hex = rating_colors.get(current_rating, "#FFFFFF")
     grid_rating_display = f"<font color='{target_hex}'><b>{current_rating}</b></font>"
     
-    # Restored your exact 4-column Table format
     data = [
         [Paragraph("<b>Company:</b>", table_text), Paragraph(str(metrics['name']), table_val), Paragraph("<b>Category:</b>", table_text), Paragraph(sector_val, table_val)],
         [Paragraph("<b>Current Price:</b>", table_text), Paragraph(f"INR {metrics['price']}", table_val), Paragraph("<b>Time Horizon:</b>", table_text), Paragraph(duration_val, table_val)],
@@ -190,11 +199,11 @@ def build_pdf_report(pdf_buffer, ticker, metrics, ai_text):
 if 'report_data' not in st.session_state:
     st.session_state.report_data = None
 
-st.title("The Gatekeeper Institutional App")
+st.title("ASW Stock Ideas")
 ticker_input = st.text_input("Enter Ticker Symbol (e.g. BLUSPRING, TATAMOTORS):", "BLUSPRING")
 
 if st.button("Generate Report"):
-    with st.spinner('Running Gatekeeper Engine...'):
+    with st.spinner('Analyzing Fundamentals and Live Macro Risks...'):
         try:
             metrics = fetch_stock_data(ticker_input)
             ai_text = generate_report_content(ticker_input, metrics)
@@ -202,7 +211,6 @@ if st.button("Generate Report"):
         except Exception as e:
             st.error(f"Error: {e}")
 
-# Display Logic
 if st.session_state.report_data:
     data = st.session_state.report_data
     
@@ -212,7 +220,6 @@ if st.session_state.report_data:
         "Value": [data['metrics']['price'], data['metrics']['pe_ratio'], data['metrics']['debt_to_equity'], data['metrics']['net_margin'], data['metrics']['market_cap']]
     })
     
-    # Render Web Text (Adding Markdown headers dynamically just for the web page, not the PDF)
     display_text = re.sub(r'DYNAMIC_.*?\n', '', data['ai_text'])
     for h in ["COMPANY OVERVIEW", "FUNDAMENTAL & MOMENTUM ANALYSIS", "MACRO AND SECTOR CATALYSTS", "KEY RISKS", "ACTIONABLE VERDICT"]:
         display_text = display_text.replace(h, f"\n### {h}")
@@ -220,7 +227,6 @@ if st.session_state.report_data:
     st.markdown(display_text)
     st.markdown("---")
     
-    # Download Button Logic
     pdf_buffer = io.BytesIO()
     build_pdf_report(pdf_buffer, data['ticker'], data['metrics'], data['ai_text'])
     pdf_buffer.seek(0)
@@ -228,6 +234,6 @@ if st.session_state.report_data:
     st.download_button(
         label="📥 Download Official PDF Report", 
         data=pdf_buffer, 
-        file_name=f"{data['ticker']}_Report.pdf", 
+        file_name=f"{data['ticker']}_ASW_Report.pdf", 
         mime="application/pdf"
     )
