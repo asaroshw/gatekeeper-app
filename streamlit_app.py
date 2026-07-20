@@ -12,7 +12,7 @@ from google.genai import types
 
 # 1. Setup
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
-st.set_page_config(page_title="Gatekeeper Institutional App", layout="wide")
+st.set_page_config(page_title="ASW Stock Ideas", layout="wide")
 
 # 2. CORE LOGIC (Your exact Colab code)
 def fetch_stock_data(ticker_symbol):
