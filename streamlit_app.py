@@ -3,6 +3,7 @@ import yfinance as yf
 import logging
 import re
 import io
+import requests
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -16,39 +17,60 @@ st.set_page_config(page_title="ASW Stock Ideas", layout="wide")
 
 # 2. CORE LOGIC FUNCTIONS
 
-def fetch_stock_data(stock_input):
-    stock_upper = stock_input.upper().strip()
+def resolve_name_to_ticker(stock_input):
+    """Uses Yahoo's native search API to find the exact ticker from a plain name."""
+    stock_str = str(stock_input).strip()
+    
+    # If someone still manually enters a BSE number, catch it smoothly
+    if stock_str.isdigit():
+        return stock_str + '.BO'
+        
+    try:
+        # Silently query Yahoo Finance's search bar
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={stock_str}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers, timeout=5)
+        data = res.json()
+        if 'quotes' in data and len(data['quotes']) > 0:
+            return data['quotes'][0]['symbol']
+    except Exception:
+        pass
+        
+    # Final fallback if search fails
+    upper_input = stock_str.upper()
+    if not upper_input.endswith(('.NS', '.BO')):
+         return upper_input + '.NS'
+    return upper_input
+
+def fetch_stock_data(resolved_ticker):
     info = None
-    
-    # Check if user entered a raw number (like Taparia's BSE code 505685)
-    # If they did, append .BO automatically so it works cleanly.
-    if stock_upper.isdigit():
-        stock_upper = stock_upper + '.BO'
-    
-    if not stock_upper.endswith(('.NS', '.BO')):
-        try:
-            stock = yf.Ticker(stock_upper + '.NS')
-            info = stock.info
-            if 'currentPrice' not in info: raise ValueError
-        except Exception:
-            try:
-                stock = yf.Ticker(stock_upper + '.BO')
-                info = stock.info
-                if 'currentPrice' not in info: raise ValueError("Stock not found.")
-            except Exception: raise ValueError("Stock not found on NSE or BSE.")
-    else:
-        stock = yf.Ticker(stock_upper)
+    try:
+        stock = yf.Ticker(resolved_ticker)
         info = stock.info
-        if 'currentPrice' not in info: raise ValueError("Stock not found.")
+        if 'currentPrice' not in info: raise ValueError
+    except Exception:
+        raise ValueError("Stock not found. Please try a different name.")
             
     metrics = {
-        "name": info.get("longName", stock_upper),
+        "name": info.get("longName", resolved_ticker),
         "price": info.get("currentPrice", "N/A"),
         "pe_ratio": info.get("trailingPE", "N/A"),
         "debt_to_equity": info.get("debtToEquity", "N/A"),
         "net_margin": info.get("profitMargins", "N/A"),
-        "market_cap": info.get("marketCap", "N/A")
+        "market_cap": info.get("marketCap", "N/A"),
+        "recent_news": ""
     }
+    
+    # NEW: Pull latest Yahoo headlines so AI can assess live macro-risks without hitting API limits
+    try:
+        news_items = stock.news
+        if news_items:
+            headlines = [n.get('title', '') for n in news_items[:4]]
+            metrics["recent_news"] = " | ".join(headlines)
+        else:
+            metrics["recent_news"] = "No recent major headlines."
+    except Exception:
+        metrics["recent_news"] = "News fetching unavailable."
     
     if metrics["debt_to_equity"] != "N/A": metrics["debt_to_equity"] = round(metrics["debt_to_equity"] / 100, 2)
     if metrics["net_margin"] != "N/A": metrics["net_margin"] = f"{round(metrics['net_margin'] * 100, 2)}%"
@@ -73,9 +95,10 @@ def fetch_stock_data(stock_input):
         
     return metrics
 
-def generate_report_content(stock_name, metrics):
+def generate_report_content(stock_name, metrics, ticker):
     client = genai.Client(api_key=st.secrets["API_KEY"])
     
+    # We stripped the Google Search command out of the prompt so it never errors out
     system_instruction = """
     Act as an automated, professional-grade equity research assistant built in the style of an institutional advisory report. You are a ruthless analyst evaluating 360-degree risk.
     Do not use any markdown tags, asterisks, or hash symbols in your response. Output raw text separated by clean line breaks.
@@ -93,21 +116,20 @@ def generate_report_content(stock_name, metrics):
     KEY RISKS
     ACTIONABLE VERDICT
     
-    ANALYST RULES (LIVE MACRO & RISKS):
-    1. You MUST use your Google Search tool to look up the most recent news, geopolitical impacts, regulatory audits (like FDA), and tariff/supply chain issues affecting this specific company and its sector today.
-    2. Examples to check: For airlines/hospitality/tyres, assess crude oil price shocks and West Asian crises. For Pharma, assess FDA audits, plant inspections, and licensing. For exporters (IT/Manufacturing), assess tariffs and freight costs. For domestic players, assess import duty threats.
-    3. OVERRIDE RULE: If severe macro headwinds, thin margins, geopolitical supply chain risks, or regulatory threats exist in the current news, you MUST downgrade the rating (e.g., to HOLD, DON'T BUY, or SELL), even if historical financial momentum looks excellent.
+    ANALYST RULES (MACRO & RISKS):
+    1. Read the provided "Recent Headlines" parameter. If the news shows macro headwinds, supply chain risks, regulatory threats, or commodity shocks, you MUST explicitly evaluate them.
+    2. OVERRIDE RULE: If severe external threats exist in the headlines or margins are razor-thin, you MUST downgrade the rating (e.g., to HOLD, DON'T BUY, or SELL), even if historical financial momentum looks excellent.
     
     VERDICT FORMATTING RULE:
     Under the ACTIONABLE VERDICT header, you must output exactly two things:
     Line 1: The DYNAMIC_RATING itself in all caps (e.g., HOLD).
-    Line 2: The detailed explanation of the verdict, explicitly weighing the financials against the live macro/regulatory risks found in the news.
+    Line 2: The detailed explanation of the verdict, explicitly weighing the financials against the recent headlines.
     """
     
     user_prompt = f"""
     Analyze this stock:
     Company Name: {metrics['name']}
-    Stock Name/Ticker: {stock_name}
+    Ticker: {ticker}
     Current Price: INR {metrics['price']}
     TTM P/E Ratio: {metrics['pe_ratio']}
     Debt-to-Equity Ratio: {metrics['debt_to_equity']}
@@ -117,22 +139,23 @@ def generate_report_content(stock_name, metrics):
     HISTORICAL MOMENTUM METRICS:
     Net Income Trend: {metrics['net_income_trend']}
     Debt Trend: {metrics['debt_trend']}
+    
+    RECENT HEADLINES (For Macro Risk Assessment):
+    {metrics['recent_news']}
     """
     
-    search_tool = types.Tool(google_search=types.GoogleSearch())
-    
+    # Google Search Tool has been completely removed to bypass quota limits
     response = client.models.generate_content(
         model='gemini-3.1-flash-lite', 
         contents=user_prompt, 
         config=types.GenerateContentConfig(
             system_instruction=system_instruction, 
-            temperature=0.15,
-            tools=[search_tool]
+            temperature=0.15
         )
     )
     return response.text
 
-def build_pdf_report(pdf_buffer, stock_name, metrics, ai_text):
+def build_pdf_report(pdf_buffer, stock_name, metrics, ai_text, ticker):
     doc = SimpleDocTemplate(pdf_buffer, pagesize=letter, rightMargin=45, leftMargin=45, topMargin=45, bottomMargin=45)
     styles = getSampleStyleSheet()
     
@@ -207,22 +230,27 @@ if 'report_data' not in st.session_state:
     st.session_state.report_data = None
 
 st.title("ASW Stock Ideas")
-
-# Helpful placeholder message so users know how to enter normal tickers vs BSE numeric tools like Taparia
-stock_input = st.text_input("Enter Stock Name / Ticker (e.g., TATAMOTORS, AAPL, or 505685 for Taparia):", "TATAMOTORS")
+stock_input = st.text_input("Enter Stock Name (e.g., Tata Motors, Apple, Taparia Tools):", "Tata Motors")
 
 if st.button("Generate Report"):
-    # We stripped out the entire separate AI Ticker Resolver block to cut down requests
-    with st.spinner('Fetching Data & Analyzing Live Macro Risks...'):
+    with st.spinner('Fetching Data & Analyzing Live News...'):
         try:
-            metrics = fetch_stock_data(stock_input)
-            ai_text = generate_report_content(stock_input, metrics)
-            st.session_state.report_data = {"metrics": metrics, "ai_text": ai_text, "stock": stock_input}
+            # Look up the ticker invisibly using Yahoo's search bar
+            resolved_ticker = resolve_name_to_ticker(stock_input)
+            
+            # Fetch the data and the recent news
+            metrics = fetch_stock_data(resolved_ticker)
+            
+            # Generate the report
+            ai_text = generate_report_content(stock_input, metrics, resolved_ticker)
+            st.session_state.report_data = {"metrics": metrics, "ai_text": ai_text, "stock": stock_input, "ticker": resolved_ticker}
         except Exception as e:
-            st.error(f"Error: {e}. Please ensure the stock code is entered correctly (e.g., use numeric codes like 505685 for exclusive BSE stocks).")
+            st.error(f"Error: {e}")
 
 if st.session_state.report_data:
     data = st.session_state.report_data
+    
+    st.success(f"Generated report for: **{data['ticker']}**")
     
     st.subheader("Market Metrics")
     st.table({
@@ -238,12 +266,12 @@ if st.session_state.report_data:
     st.markdown("---")
     
     pdf_buffer = io.BytesIO()
-    build_pdf_report(pdf_buffer, data['stock'], data['metrics'], data['ai_text'])
+    build_pdf_report(pdf_buffer, data['stock'], data['metrics'], data['ai_text'], data['ticker'])
     pdf_buffer.seek(0)
     
     st.download_button(
         label="📥 Download Official PDF Report", 
         data=pdf_buffer, 
-        file_name=f"{data['stock']}_ASW_Report.pdf", 
+        file_name=f"{data['ticker']}_ASW_Report.pdf", 
         mime="application/pdf"
     )
