@@ -172,13 +172,28 @@ ticker_input = st.text_input("Enter Stock Name (e.g. BLUSPRING, TATAMOTORS):")
 if st.button("Generate & Download Report"):
     with st.spinner('Running Gatekeeper Engine...'):
         try:
+            # 1. Logic
             metrics = fetch_stock_data(ticker_input)
             ai_text = generate_report_content(ticker_input, metrics)
+            
+            # 2. Display the Report on the Page
+            st.success("Report Generated!")
+            st.markdown("---")
+            # Using markdown allows for headers and clean formatting in the browser
+            st.markdown(ai_text) 
+            st.markdown("---")
+            
+            # 3. Create PDF in background for download
             pdf_buffer = io.BytesIO()
             build_pdf_report(pdf_buffer, ticker_input, metrics, ai_text)
             pdf_buffer.seek(0)
             
-            st.success("Report Generated!")
-            st.download_button("Download PDF Report", data=pdf_buffer, file_name=f"{ticker_input}_Report.pdf", mime="application/pdf")
+            # 4. Download Button
+            st.download_button(
+                label="📥 Download Full PDF Report",
+                data=pdf_buffer,
+                file_name=f"{ticker_input}_Report.pdf",
+                mime="application/pdf"
+            )
         except Exception as e:
             st.error(f"Error: {e}")
