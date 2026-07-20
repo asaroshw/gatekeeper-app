@@ -18,14 +18,13 @@ st.set_page_config(page_title="ASW Stock Ideas", layout="wide")
 # 2. CORE LOGIC FUNCTIONS
 
 def resolve_name_to_ticker(stock_input):
-    """Uses Yahoo's native search API with advanced headers to find the exact ticker."""
+    """Uses Yahoo's native search API, strictly filtering for Indian Stocks."""
     stock_str = str(stock_input).strip()
     
-    # 1. Catch BSE numeric codes (e.g., 505685 for Taparia Tools)
+    # Catch pure numeric inputs (e.g., 505685 for Taparia Tools)
     if stock_str.isdigit():
         return stock_str + '.BO'
         
-    # 2. Try Yahoo's Search API with a heavy-duty User-Agent to bypass bot filters
     try:
         url = f"https://query2.finance.yahoo.com/v1/finance/search?q={stock_str}"
         headers = {
@@ -35,40 +34,39 @@ def resolve_name_to_ticker(stock_input):
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            if 'quotes' in data and len(data['quotes']) > 0:
-                return data['quotes'][0]['symbol']
+            if 'quotes' in data:
+                # STRICT FILTER: Only grab the first result that is specifically on the NSE or BSE
+                for q in data['quotes']:
+                    sym = q.get('symbol', '').upper()
+                    if sym.endswith('.NS') or sym.endswith('.BO'):
+                        return sym
     except Exception:
         pass
         
-    # 3. Fallback: Strip spaces and guess it's an Indian stock (NSE)
+    # Fallback: Strip spaces and guess it's an Indian stock (NSE)
     upper_input = stock_str.upper().replace(" ", "")
     if not upper_input.endswith(('.NS', '.BO')):
          return upper_input + '.NS'
     return upper_input
 
 def fetch_stock_data(resolved_ticker, raw_input):
-    info = None
-    stock = None
+    stock = yf.Ticker(resolved_ticker)
     
-    # Try the resolved ticker first
-    try:
-        stock = yf.Ticker(resolved_ticker)
-        info = stock.info
-        if 'currentPrice' not in info: raise ValueError
-    except Exception:
-        # SAFETY NET: If the search API got blocked and it guessed "APPLE.NS", try standard US ticker
-        try:
-            pure_ticker = raw_input.upper().replace(" ", "")
-            stock = yf.Ticker(pure_ticker)
-            info = stock.info
-            if 'currentPrice' not in info: raise ValueError
-            resolved_ticker = pure_ticker # Update it to the working US ticker
-        except Exception:
-            raise ValueError(f"Could not find financial data for '{raw_input}'. Try using the exact stock symbol.")
-            
+    # ROBUST CHECK: Use historical data to verify the stock actually exists on the exchange
+    hist = stock.history(period="1d")
+    if hist.empty:
+        raise ValueError(f"Could not find '{raw_input}' on the NSE or BSE. Please check the spelling.")
+        
+    info = stock.info
+    
+    # Fallback for price if Yahoo's info dictionary randomly fails
+    price = info.get("currentPrice")
+    if price is None:
+        price = round(hist['Close'].iloc[-1], 2)
+        
     metrics = {
         "name": info.get("longName", resolved_ticker),
-        "price": info.get("currentPrice", "N/A"),
+        "price": price,
         "pe_ratio": info.get("trailingPE", "N/A"),
         "debt_to_equity": info.get("debtToEquity", "N/A"),
         "net_margin": info.get("profitMargins", "N/A"),
@@ -77,7 +75,6 @@ def fetch_stock_data(resolved_ticker, raw_input):
         "working_ticker": resolved_ticker
     }
     
-    # Pull latest Yahoo headlines so AI can assess live macro-risks
     try:
         news_items = stock.news
         if news_items:
@@ -88,8 +85,13 @@ def fetch_stock_data(resolved_ticker, raw_input):
     except Exception:
         metrics["recent_news"] = "News fetching unavailable."
     
-    if metrics["debt_to_equity"] != "N/A": metrics["debt_to_equity"] = round(metrics["debt_to_equity"] / 100, 2)
-    if metrics["net_margin"] != "N/A": metrics["net_margin"] = f"{round(metrics['net_margin'] * 100, 2)}%"
+    if metrics["debt_to_equity"] != "N/A": 
+        try: metrics["debt_to_equity"] = round(metrics["debt_to_equity"] / 100, 2)
+        except: metrics["debt_to_equity"] = "N/A"
+        
+    if metrics["net_margin"] != "N/A": 
+        try: metrics["net_margin"] = f"{round(metrics['net_margin'] * 100, 2)}%"
+        except: metrics["net_margin"] = "N/A"
     
     try:
         fin = stock.financials
@@ -244,7 +246,7 @@ if 'report_data' not in st.session_state:
     st.session_state.report_data = None
 
 st.title("ASW Stock Ideas")
-stock_input = st.text_input("Enter Stock Name (e.g., Tata Motors, Apple, Taparia Tools):", "Tata Motors")
+stock_input = st.text_input("Enter Stock Name (e.g., Tata Motors, JK Tyres, Taparia Tools):", "Tata Motors")
 
 if st.button("Generate Report"):
     with st.spinner('Fetching Data & Analyzing Live News...'):
@@ -255,7 +257,7 @@ if st.button("Generate Report"):
             # Fetch the data and the recent news
             metrics = fetch_stock_data(resolved_ticker, stock_input)
             
-            # Grab the final working ticker (in case the safety net activated)
+            # Grab the final working ticker
             final_ticker = metrics.pop('working_ticker')
             
             # Generate the report
