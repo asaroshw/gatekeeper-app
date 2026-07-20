@@ -3,6 +3,7 @@ import yfinance as yf
 import logging
 import re
 import io
+import time  # Imported for handling API burst rate limits
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -16,7 +17,7 @@ st.set_page_config(page_title="ASW Stock Ideas", layout="wide")
 
 # 2. CORE LOGIC FUNCTIONS
 
-# NEW FUNCTION: AI Ticker Resolver
+# AI Ticker Resolver
 def resolve_ticker_with_ai(stock_name):
     client = genai.Client(api_key=st.secrets["API_KEY"])
     search_tool = types.Tool(google_search=types.GoogleSearch())
@@ -44,13 +45,11 @@ def fetch_stock_data(ticker_symbol):
     ticker_upper = ticker_symbol.upper().strip()
     info = None
     
-    # Try the exact AI-provided ticker first
     try:
         stock = yf.Ticker(ticker_upper)
         info = stock.info
         if 'currentPrice' not in info: raise ValueError
     except Exception:
-        # Fallback just in case the AI missed the suffix
         if not ticker_upper.endswith(('.NS', '.BO')):
             try:
                 stock = yf.Ticker(ticker_upper + '.NS')
@@ -239,6 +238,9 @@ if st.button("Generate Report"):
             # 1. Ask the AI to figure out what stock you mean
             resolved_ticker = resolve_ticker_with_ai(stock_input)
             st.success(f"Resolved '{stock_input}' to Yahoo Finance Ticker: **{resolved_ticker}**")
+            
+            # OPTION 1 FIX: Sleep for 3 seconds to avoid triggering the free-tier burst limit
+            time.sleep(3)
             
             # 2. Fetch the data using the perfectly resolved code
             with st.spinner('Fetching Data & Analyzing Live Macro Risks...'):
